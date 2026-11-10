@@ -27,9 +27,9 @@ import yfinance as yf
 WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 
 GAP_MIN_PCT = 1.0            # 窓幅の下限(%)。前日安値に対して始値が何%下か
-REQUIRE_UNFILLED = False     # True: 当日高値が前日安値に届かず「窓を開けたまま」の銘柄だけ
+REQUIRE_UNFILLED = True      # True: 当日高値が前日安値に届かず「窓を開けたまま」の銘柄だけ
 MIN_TRADING_VALUE_OKU = 1.0  # 当日売買代金の下限(億円)。0で無効
-MAX_NOTIFY = 30              # 通知する最大件数（窓幅の大きい順）
+MAX_NOTIFY = 100             # 通知する最大件数（窓幅の大きい順）。0で無制限
 CHUNK_SIZE = 200             # yfinance 一括取得の銘柄数
 FORCE = os.environ.get("FORCE", "0") == "1"  # 1なら休場日チェックを無視
 
@@ -39,7 +39,7 @@ LINK_TEMPLATE = "https://finance.yahoo.co.jp/quote/{code}.T"
 
 JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
 UA = {"User-Agent": "Mozilla/5.0"}
-EMBED_COLOR = 0xE74C3C       # 赤
+EMBED_COLOR = 0x3498DB       # カード横の棒の色（青）。緑なら 0x2ECC71、灰色なら 0x95A5A6
 JST = timezone(timedelta(hours=9))
 # ================================================
 
@@ -157,8 +157,7 @@ def build_embed(rank: int, r: dict) -> dict:
     mc = r.get("market_cap_oku")
     mc_txt = f"({mc:,.0f}億円)" if mc else ""
     vol_txt = f"{r['vol_ratio']:.2f}倍" if r["vol_ratio"] else "—"
-    fill_txt = (f"🕳️ 窓 **未埋め**（窓上限まで +{r['to_fill_pct']:.1f}%）"
-                if r["unfilled"] else "🩹 窓 ザラ場で一部/全部埋め")
+    fill_txt = f"🕳️ 窓上限（前日安値）まで +{r['to_fill_pct']:.1f}%"
 
     lines = [
         f"`{r['code']}` {r['sector']}",
@@ -188,22 +187,22 @@ def post_discord(payload: dict) -> None:
         return
 
 
-def notify(results: list[dict], date_str: str) -> None:
+def notify(results: list[dict], total: int, date_str: str) -> None:
+    # ① 最初に件数だけ通知
+    head = f"📉 **{date_str} 窓が空いている銘柄（プライム）: {total}件**"
+    if total > len(results):
+        head += f"\n（窓幅の大きい順に上位{len(results)}件を表示）"
+    head += (f"\n条件: 窓幅 {GAP_MIN_PCT}%以上 / 売買代金 {MIN_TRADING_VALUE_OKU}億円以上"
+             f"{' / 窓未埋めのみ' if REQUIRE_UNFILLED else ''}")
+    post_discord({"content": head})
     if not results:
-        post_discord({"content": f"📉 **{date_str} 窓開け下落銘柄**\n該当なし"})
         return
+    time.sleep(1)
 
-    header = (f"📉 **{date_str} 窓開け下落銘柄（プライム）** {len(results)}件\n"
-              f"条件: 窓幅 {GAP_MIN_PCT}%以上 / 売買代金 {MIN_TRADING_VALUE_OKU}億円以上"
-              f"{' / 窓未埋めのみ' if REQUIRE_UNFILLED else ''}")
+    # ② そのあと一覧（Discordは1メッセージ10枚まで）
     embeds = [build_embed(i + 1, r) for i, r in enumerate(results)]
-
-    # Discordは1メッセージ10embedまで
     for i in range(0, len(embeds), 10):
-        payload = {"embeds": embeds[i:i + 10]}
-        if i == 0:
-            payload["content"] = header
-        post_discord(payload)
+        post_discord({"embeds": embeds[i:i + 10]})
         time.sleep(1)
 
 
@@ -239,12 +238,14 @@ def main() -> None:
             results.append(r)
 
     results.sort(key=lambda x: x["gap_pct"], reverse=True)
-    results = results[:MAX_NOTIFY]
+    total = len(results)
+    if MAX_NOTIFY > 0:
+        results = results[:MAX_NOTIFY]
     print(f"  該当 {len(results)} 件 → 時価総額取得中...")
     for r in results:
         r["market_cap_oku"] = get_market_cap_oku(r["code"])
 
-    notify(results, latest)
+    notify(results, total, latest)
     print("完了")
 
 
