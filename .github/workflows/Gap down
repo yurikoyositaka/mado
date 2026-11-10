@@ -1,0 +1,24 @@
+name: Gap Down Notifier
+
+on:
+  schedule:
+    - cron: "10 7 * * 1-5"   # 平日 16:10 JST
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "休場日チェックを無視する(1)"
+        default: "0"
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install yfinance pandas requests xlrd
+      - run: python gap_down_notifier.py
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          FORCE: ${{ github.event.inputs.force || '0' }}
