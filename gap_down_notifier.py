@@ -8,11 +8,13 @@
   ・REQUIRE_UNFILLED=True なら「当日高値 < 前日安値（窓を埋めずに引けた）」のみ
 
 必要なもの
-  pip install yfinance pandas requests xlrd
+  pip install yfinance pandas requests xlrd openpyxl
   環境変数 DISCORD_WEBHOOK_URL に Webhook URL を設定
 """
 
+import io
 import os
+import re
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -35,16 +37,31 @@ FORCE = os.environ.get("FORCE", "0") == "1"  # 1なら休場日チェックを�
 LINK_TEMPLATE = "https://finance.yahoo.co.jp/quote/{code}.T"
 # 株探にしたい場合 → "https://kabutan.jp/stock/chart?code={code}"
 
-JPX_URL = ("https://www.jpx.co.jp/markets/statistics-equities/misc/"
-           "tvdivq0000001vg2-att/data_j.xls")
+JPX_PAGE = "https://www.jpx.co.jp/markets/statistics-equities/misc/01.html"
+UA = {"User-Agent": "Mozilla/5.0"}
 EMBED_COLOR = 0xE74C3C       # 赤
 JST = timezone(timedelta(hours=9))
 # ================================================
 
 
+def find_jpx_list_url() -> str:
+    """JPXの案内ページから銘柄一覧Excelの最新リンクを探す"""
+    page = requests.get(JPX_PAGE, headers=UA, timeout=30)
+    page.raise_for_status()
+    links = re.findall(r'href="([^"]+\.xlsx?)"', page.text)
+    if not links:
+        raise RuntimeError("JPXページにExcelのリンクが見つかりません")
+    url = links[0]
+    return url if url.startswith("http") else "https://www.jpx.co.jp" + url
+
+
 def load_prime_list() -> pd.DataFrame:
     """JPXの上場銘柄一覧からプライム（内国株式）を取得"""
-    df = pd.read_excel(JPX_URL, dtype={"コード": str})
+    url = find_jpx_list_url()
+    print(f"  銘柄一覧: {url}")
+    res = requests.get(url, headers=UA, timeout=60)
+    res.raise_for_status()
+    df = pd.read_excel(io.BytesIO(res.content), dtype={"コード": str})
     df = df[df["市場・商品区分"].astype(str).str.contains("プライム")]
     df = df.rename(columns={"コード": "code", "銘柄名": "name", "33業種区分": "sector"})
     df["code"] = df["code"].astype(str).str.strip()
